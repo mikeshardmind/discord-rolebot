@@ -4,3 +4,4 @@ discord.py>=2.2.2,<3
 aiohttp>=3.8.3,<4
 typing_extensions>=4.5.0
 tomli >= 2.0.1 ; python_version < "3.11"
+xxhash==3.2.0

@@ -14,10 +14,13 @@ import re
 import struct
 from itertools import chain
 from pathlib import Path
+import sys
 from typing import Iterator, NamedTuple
 
+import xxhash
 import base2048
 import discord
+import json
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 from typing_extensions import Self
@@ -329,13 +332,26 @@ async def role_menu_maker(itx: discord.Interaction["RoleBot"], attachment: disco
     await itx.followup.send("Menu created", ephemeral=True)
 
 
+class VersionableTree(discord.app_commands.CommandTree):
+    async def get_hash(self) -> bytes:
+        commands = sorted(self._get_all_commands(guild=None), key=lambda c: c.qualified_name)
+
+        translator = self.translator
+        if translator:
+            payload = [await command.get_translated_payload(translator) for command in commands]
+        else:
+            payload = [command.to_dict() for command in commands]
+
+        return xxhash.xxh64_digest(json.dumps(payload).encode("utf-8"), seed=0)
+
+
 class RoleBot(discord.AutoShardedClient):
     def __init__(self, valid_since: int, aessiv: AESSIV) -> None:
         super().__init__(intents=discord.Intents(1))
         self.aessiv = aessiv
         self.valid_since = valid_since
         self.interaction_regex = re.compile(r"^rr\d{2}:(.*)$", flags=re.DOTALL)
-        self.tree = discord.app_commands.CommandTree(self, fallback_to_global=False)
+        self.tree = VersionableTree(self, fallback_to_global=False)
 
     async def setup_hook(self) -> None:
         """
@@ -344,6 +360,19 @@ class RoleBot(discord.AutoShardedClient):
         or having a command tied to an instance of a bot as module state.
         """
         self.tree.command(name="createrolemenu")(role_menu_maker)
+
+        tree_hash = await self.tree.get_hash()
+
+        path = Path(__file__).with_name("rolebot.syncdata")
+        with path.open(mode="w+b") as fp:
+            data = fp.read()
+            if data != tree_hash:
+                await self.tree.sync()
+                fp.seek(0)
+                fp.write(tree_hash)
+
+
+
         await self.tree.sync()
 
     async def on_interaction(self: Self, interaction: discord.Interaction[Self]):
@@ -533,11 +562,25 @@ class RoleBot(discord.AutoShardedClient):
         return message
 
 
-if __name__ == "__main__":
+def main():
     token = os.getenv("ROLEBOT_TOKEN", "")
+    if not token:
+        try:
+            with Path(__file__).with_name("rolebot.token").open(mode="r") as f:
+                token = f.read().strip()
+        except Exception:
+            print(
+                "Must provide a token either as an environment variable named "
+                "'ROLEBOT_TOKEN' or in a file named 'rolebot.token' next to this file."
+            )
+            sys.exit(1)
     p = Path(__file__).with_name("rolebot.secrets")
     _generate_secret_data_file(p)
     valid_since, aessiv = get_secret_data_from_file(p)
 
     client = RoleBot(valid_since, aessiv)
     client.run(token)
+
+
+if __name__ == "__main__":
+    main()

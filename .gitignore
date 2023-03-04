@@ -156,3 +156,10 @@ cython_debug/
 
 # project specific
 *.secrets
+*.token
+*.syncdata
+*.exe
+
+
+*build
+*dist
