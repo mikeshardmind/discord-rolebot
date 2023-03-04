@@ -12,12 +12,14 @@ import logging
 import re
 import struct
 from itertools import chain
-from typing import Iterator, NamedTuple, Self
+from pathlib import Path
+from typing import Iterator, NamedTuple
 
 import base2048
 import discord
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV
+from typing_extensions import Self
 
 log = logging.getLogger(__name__)
 
@@ -192,14 +194,43 @@ def unpack_rules(raw: bytes, /) -> VERSIONED_DATA:
         return data
 
 
-def get_aessiv_key():
-    with open("aessiv.key", mode="rb") as f:
-        return f.read()
+def get_secret_data_from_file(path: Path) -> tuple[int, AESSIV]:
+    """
+    We get back a number that represents an equivalent 
+    time portion of a discord snowflake (snowflake >> 22)
+    for when a key was generated ad well as a key
+    """
+    with path.open(mode="rb") as fp:
+        raw = fp.read()
+        ts, k =  struct.unpack("!Q64s", raw)
+        return ts, AESSIV(k)
+
+
+def _generate_secret_data_file(path: Path):
+    """
+    Writes a file in the format expected by `get_secret_data`
+    after generating the values and writes to a path.
+
+    assumes system clock is fine.
+
+    will not overwrite an existing path
+    (barring filesytem race conditions not considered in scope to account for)
+    """
+
+    if path.exists():
+        return
+
+    key = AESSIV.generate_key(512)
+    time = discord.utils.time_snowflake(discord.utils.utcnow()) >> 22
+
+    with path.open(mode="rb") as fp:
+        fp.write(struct.pack("!Q64s", time, key))
 
 
 class RoleBot(discord.AutoShardedClient):
-    def __init__(self, aessiv: AESSIV) -> None:
+    def __init__(self, valid_since: int, aessiv: AESSIV) -> None:
         self.aessiv = aessiv
+        self.valid_since = valid_since
         self.interaction_regex = re.compile(r"^rr\d{2}:(.*)$", flags=re.DOTALL)
         self.tree = discord.app_commands.CommandTree(self, fallback_to_global=False)
         super().__init__(intents=discord.Intents(1))
@@ -227,28 +258,31 @@ class RoleBot(discord.AutoShardedClient):
         assert isinstance(interaction.user, discord.Member)
         assert interaction.guild is not None
 
+        message = interaction.message
+        user = interaction.user
+        guild = interaction.guild
+
+        if (message.id >> 22) < self.valid_since:
+            log.info("Not processing button that predates key on message_id: %d from user: %d", message.id, user.id)
+            return
+
         try:
             by = base2048.decode(encoded_rules)
         except Exception:
             log.exception(
                 "SEC: Could not decode expected valid custom id using base2048: %s from user %d",
                 encoded_rules,
-                interaction.user.id,
+                user.id,
             )
             return
 
         try:
-            packed_rules = self.aessiv.decrypt(
-                by,
-                [
-                    interaction.message.id.to_bytes(8)
-                ],
-            )
+            packed_rules = self.aessiv.decrypt(by, [message.id.to_bytes(8, byteorder="big")])
         except InvalidTag:
             log.exception(
                 "SEC: Got a custom id %s that couldn't decrypt with aessiv key from user %d",
                 encoded_rules,
-                interaction.user.id,
+                user.id,
             )
             return
 
@@ -258,13 +292,11 @@ class RoleBot(discord.AutoShardedClient):
             log.exception(
                 "SEC: Could not unpack custom_id %s after decryption passed from user %d",
                 encoded_rules,
-                interaction.user.id,
+                user.id,
             )
             return
 
-        member: discord.Member = interaction.user
-
-        starting_role_ids = {r.id for r in member.roles}
+        starting_role_ids = {r.id for r in user.roles}
 
         if any(
             (
@@ -292,7 +324,6 @@ class RoleBot(discord.AutoShardedClient):
         if not (added or removed):
             return  # nothing to change
 
-        guild = member.guild
         if not guild.me.guild_permissions.manage_roles:
             return await interaction.followup.send(
                 content="I no longer have permission to do that", ephemeral=True
@@ -317,7 +348,7 @@ class RoleBot(discord.AutoShardedClient):
                         "SEC: passed decryption, passed unpack, impossible ID %d from packed rules %s from user %d",
                         rid,
                         packed_rules,
-                        interaction.user.id,
+                        user.id,
                     )
                     return
                 else:
@@ -327,7 +358,7 @@ class RoleBot(discord.AutoShardedClient):
                     )
 
         try:
-            await member.edit(
+            await user.edit(
                 roles=[discord.Object(rid) for rid in new_role_ids],
                 reason="Used a role button.",
             )
@@ -365,7 +396,7 @@ class RoleBot(discord.AutoShardedClient):
 
         for idx, (label, data) in enumerate(label_action_pairs):
             packed = pack_rules(data)
-            enc = self.aessiv.encrypt(packed, [message.id.to_bytes(8)])
+            enc = self.aessiv.encrypt(packed, [message.id.to_bytes(8, byteorder="big")])
             to_disc = base2048.encode(enc)
             custom_id = f"rr{idx:02}:{to_disc}"
             button: discord.ui.Button[discord.ui.View] = discord.ui.Button(label=label, custom_id=custom_id)
