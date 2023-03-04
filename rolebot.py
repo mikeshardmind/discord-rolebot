@@ -21,6 +21,11 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 from typing_extensions import Self
 
+try:
+    import tomllib  # type: ignore
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore
+
 log = logging.getLogger(__name__)
 
 ########################################## HAZMAT: AESSIV ##########################################
@@ -138,6 +143,7 @@ class DataV1(NamedTuple):
             if not (self.add or self.remove):
                 raise RuleError("Must provide at least one of add, remove, or toggle as an action")
 
+
 # can expand this to a type union if needed later on, until then it's an alias where future API should handle this.
 VERSIONED_DATA = DataV1
 
@@ -196,13 +202,13 @@ def unpack_rules(raw: bytes, /) -> VERSIONED_DATA:
 
 def get_secret_data_from_file(path: Path) -> tuple[int, AESSIV]:
     """
-    We get back a number that represents an equivalent 
+    We get back a number that represents an equivalent
     time portion of a discord snowflake (snowflake >> 22)
     for when a key was generated ad well as a key
     """
     with path.open(mode="rb") as fp:
         raw = fp.read()
-        ts, k =  struct.unpack("!Q64s", raw)
+        ts, k = struct.unpack("!Q64s", raw)
         return ts, AESSIV(k)
 
 
@@ -227,6 +233,100 @@ def _generate_secret_data_file(path: Path):
         fp.write(struct.pack("!Q64s", time, key))
 
 
+def parse_rules_file(
+    bytes: bytes,
+) -> tuple[str | None, discord.Embed | None, list[tuple[str, VERSIONED_DATA]]]:
+
+    # This whole thing is completely not understood by typechecking,
+    # and we're gonna validate this anyhow...
+
+    loaded = tomllib.load(bytes)  # type: ignore
+    content = loaded.get("content", None)  # type: ignore
+    ret_buttons: list[tuple[str, VERSIONED_DATA]] = []
+
+    if not content.strip():  # type: ignore
+        raise ValueError("Must provide content for the message the menu will be attached to")
+
+    for button in loaded.get("buttons", []):  # type: ignore
+        label = button.get("label", None)  # type: ignore
+
+        # No support for embeds yet
+
+        if not isinstance(label, str):
+            raise ValueError("Label must be a string")
+
+        sets: list[frozenset[int]] = []
+
+        for name in ("add", "remove", "toggle", "require_any", "require_all", "require_none"):
+            l = button.get(name, ())  # type: ignore
+            if not all(isinstance(element, int) for element in l):  # type: ignore
+                raise ValueError(f"{name} must be a list of ids")
+            sets.append(frozenset(l))  # type: ignore
+
+        rules = DataV1(*sets)
+        rules.validate()
+
+        ret_buttons.append((label, rules))
+
+    return content, None, ret_buttons  # type: ignore # validated above
+
+
+@discord.app_commands.guild_only()
+@discord.app_commands.default_permissions(manage_roles=True)
+async def role_menu_maker(itx: discord.Interaction["RoleBot"], attachment: discord.Attachment):
+    """
+    This function creates a role menu from an attachment.
+
+    To be better documented soon :tm:
+    May also create a web interface, who knows.
+    """
+    # Look, even if someone modifies the app command settings, we aren't gonna allow this. It's privesc
+    assert isinstance(itx.user, discord.Member)
+    assert itx.guild
+
+    if not isinstance(itx.channel, discord.TextChannel):
+        # I don't think this is gonna come up??
+        return await itx.response.send_message("Use this in a text channel instead", ephemeral=True)
+
+    if not itx.user.guild_permissions.manage_roles:
+        return await itx.response.send_message("You can't do this. (missing permissions)", ephemeral=True)
+
+    await itx.response.defer(ephemeral=True)
+    try:
+        content, embed, labeled_rules = parse_rules_file(await attachment.read())
+    except Exception:
+        return await itx.followup.send(
+            "Something was wrong with that file (More detailed errors may be provided in the future.)",
+            ephemeral=True,
+        )
+
+    collected_role_ids: set[int] = set()
+
+    for _label, rules in labeled_rules:
+        collected_role_ids |= rules.add | rules.toggle | rules.remove
+
+    if not collected_role_ids:
+        return await itx.followup.send(
+            "Something was wrong with that file (More detailed errors may be provided in the future.)",
+            ephemeral=True,
+        )
+
+    top_role_in_rules = max(role for rid in collected_role_ids if (role := itx.guild.get_role(rid)))
+
+    if top_role_in_rules >= itx.user.top_role:
+        return await itx.followup.send(
+            "You can't do this. (you can't create rules for roles above yours)", ephemeral=True
+        )
+
+    try:
+        await itx.client.create_role_menu(
+            itx.channel, content=content, embed=embed, label_action_pairs=labeled_rules
+        )
+    except Exception:
+        return await itx.followup.send("Something went wrong. (more detailed error in future versions)")
+    # User should see the created message, I'd hope.
+
+
 class RoleBot(discord.AutoShardedClient):
     def __init__(self, valid_since: int, aessiv: AESSIV) -> None:
         self.aessiv = aessiv
@@ -234,6 +334,15 @@ class RoleBot(discord.AutoShardedClient):
         self.interaction_regex = re.compile(r"^rr\d{2}:(.*)$", flags=re.DOTALL)
         self.tree = discord.app_commands.CommandTree(self, fallback_to_global=False)
         super().__init__(intents=discord.Intents(1))
+
+    async def setup_hook(self) -> None:
+        """
+        Someone will come along and say not to do it this way, and I'll ask them
+        to figure out a better way without wrecking type information
+        or having a command tied to an instance of a bot as module state.
+        """
+        self.tree.command(name="createrolemenu")(role_menu_maker)
+        await self.tree.sync()
 
     async def on_interaction(self: Self, interaction: discord.Interaction[Self]):
         if interaction.type is discord.InteractionType.component:
@@ -249,9 +358,9 @@ class RoleBot(discord.AutoShardedClient):
     ):
         await interaction.response.defer(ephemeral=True)
 
-        # calling contract here ensures: 
-        # 1. That the message exists 
-        # 2. That the guild exists 
+        # calling contract here ensures:
+        # 1. That the message exists
+        # 2. That the guild exists
         # 3. that the user is a member
 
         assert interaction.message is not None
@@ -263,7 +372,9 @@ class RoleBot(discord.AutoShardedClient):
         guild = interaction.guild
 
         if (message.id >> 22) < self.valid_since:
-            log.info("Not processing button that predates key on message_id: %d from user: %d", message.id, user.id)
+            log.info(
+                "Not processing button that predates key on message_id: %d from user: %d", message.id, user.id
+            )
             return
 
         try:
@@ -375,16 +486,17 @@ class RoleBot(discord.AutoShardedClient):
                 add_str = "Added roles: " + ", ".join(f"<@&{rid}>" for rid in added)
             if removed:
                 rem_str = "Removed roles: " + ", ".join(f"<@&{rid}>" for rid in removed)
-            
+
             content = "\n".join(filter(None, (add_str, rem_str)))
             await interaction.followup.send(content=content, ephemeral=True)
 
     async def create_role_menu(
         self: Self,
         channel: discord.TextChannel,
-        content: str,
+        content: str | None,
+        embed: discord.Embed | None,
         label_action_pairs: list[tuple[str, VERSIONED_DATA]],
-    ):
+    ) -> discord.Message:
 
         if len(label_action_pairs) > 25:
             raise ValueError("Cannot provide that many buttons in a view")
@@ -392,7 +504,16 @@ class RoleBot(discord.AutoShardedClient):
         view = discord.ui.View(timeout=None)
         view.stop()
 
-        message: discord.Message = await channel.send(content=content)
+        message: discord.Message
+
+        if embed and content:
+            message = await channel.send(content=content, embed=embed)
+        elif embed:
+            message = await channel.send(embed=embed)
+        elif content:
+            message = await channel.send(content=content)
+        else:
+            raise ValueError("Must provide an embed or content")
 
         for idx, (label, data) in enumerate(label_action_pairs):
             packed = pack_rules(data)
@@ -402,7 +523,13 @@ class RoleBot(discord.AutoShardedClient):
             button: discord.ui.Button[discord.ui.View] = discord.ui.Button(label=label, custom_id=custom_id)
             view.add_item(button)
 
-        await message.edit(view=view)
+        try:
+            await message.edit(view=view)
+        except Exception as exc:
+            log.exception("edit fail", exc_info=exc)
+            try:
+                await message.delete()
+            except Exception:
+                pass
 
-
-# TODO: figure out a "good" way to handle user input creating these buttons statelessly and without additional intents
+        return message

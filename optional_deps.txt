@@ -1,0 +1,11 @@
+# recommended if not using something like nuitka
+orjson>=3.5.4
+aiodns>=1.1
+Brotli
+cchardet==2.1.7 ; python_version < "3.10"
+
+# note, while the above are all still useful with nuitka, 
+# I haven't done meaningful testing of uvloop + nuitka and can't be sure it works.
+# use at own discretion. implementations in libuv should outperform nuitka + asyncio,
+# but nuitka + asyncio reaches reasonable performance.
+uvloop >= 0.17.0 ; sys_platform == "linux"
