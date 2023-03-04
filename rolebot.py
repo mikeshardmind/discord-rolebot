@@ -9,6 +9,7 @@ Copyright (C) 2022 Michael Hall <https://github.com/mikeshardmind>
 from __future__ import annotations
 
 import logging
+import os
 import re
 import struct
 from itertools import chain
@@ -150,10 +151,9 @@ VERSIONED_DATA = DataV1
 
 def pack_rules(data: VERSIONED_DATA, /) -> bytes:
     data.validate()
-    version, *ordered_lists = data
-    struct_fmt = "!bb%dQb%dQb%dQb%dQb%dQb%dQ" % tuple(map(len, ordered_lists))
-    to_pack = chain.from_iterable((len(lst), *lst) for lst in ordered_lists)
-    return struct.pack(struct_fmt, version, *to_pack)
+    struct_fmt = "!bb%dQb%dQb%dQb%dQb%dQb%dQ" % tuple(map(len, data))
+    to_pack = chain.from_iterable((len(lst), *lst) for lst in data)
+    return struct.pack(struct_fmt, 1, *to_pack)  # needs changing if new version
 
 
 def _v1_struct_unpacker(raw: bytes, /) -> Iterator[frozenset[int]]:
@@ -163,12 +163,12 @@ def _v1_struct_unpacker(raw: bytes, /) -> Iterator[frozenset[int]]:
     offset = 1
     for _ in range(6):
         (q,) = struct.unpack_from("!b", raw, offset)
-        yield frozenset(struct.unpack_from(f"{q}Q", raw, offset + 1))
+        yield frozenset(struct.unpack_from(f"!{q}Q", raw, offset + 1))
         offset += 8 * q + 1
 
 
 def _get_data_version(b: bytes, /) -> int:
-    (r,) = struct.unpack("!b", b)
+    (r,) = struct.unpack_from("!b", b, 0)
     assert isinstance(r, int)
     return r
 
@@ -191,7 +191,7 @@ def unpack_rules(raw: bytes, /) -> VERSIONED_DATA:
             raise NoUserFeedback
         data = DataV1(*_v1_struct_unpacker(raw))
         data.validate()
-    except (NoUserFeedback, struct.error):
+    except (NoUserFeedback, struct.error) as exc:
         raise NoUserFeedback from None
     except Exception as exc:
         log.exception("Unhandled exception type %s", type(exc), exc_info=False)
@@ -229,7 +229,7 @@ def _generate_secret_data_file(path: Path):
     key = AESSIV.generate_key(512)
     time = discord.utils.time_snowflake(discord.utils.utcnow()) >> 22
 
-    with path.open(mode="rb") as fp:
+    with path.open(mode="wb") as fp:
         fp.write(struct.pack("!Q64s", time, key))
 
 
@@ -240,7 +240,7 @@ def parse_rules_file(
     # This whole thing is completely not understood by typechecking,
     # and we're gonna validate this anyhow...
 
-    loaded = tomllib.load(bytes)  # type: ignore
+    loaded = tomllib.loads(bytes.decode("utf-8"))  # type: ignore
     content = loaded.get("content", None)  # type: ignore
     ret_buttons: list[tuple[str, VERSIONED_DATA]] = []
 
@@ -307,7 +307,7 @@ async def role_menu_maker(itx: discord.Interaction["RoleBot"], attachment: disco
 
     if not collected_role_ids:
         return await itx.followup.send(
-            "Something was wrong with that file (More detailed errors may be provided in the future.)",
+            "Something was wrong with that file (no ids?.)",
             ephemeral=True,
         )
 
@@ -324,16 +324,18 @@ async def role_menu_maker(itx: discord.Interaction["RoleBot"], attachment: disco
         )
     except Exception:
         return await itx.followup.send("Something went wrong. (more detailed error in future versions)")
-    # User should see the created message, I'd hope.
+
+    # It'll get stuck thinking without this, thanks discord...
+    await itx.followup.send("Menu created", ephemeral=True)
 
 
 class RoleBot(discord.AutoShardedClient):
     def __init__(self, valid_since: int, aessiv: AESSIV) -> None:
+        super().__init__(intents=discord.Intents(1))
         self.aessiv = aessiv
         self.valid_since = valid_since
         self.interaction_regex = re.compile(r"^rr\d{2}:(.*)$", flags=re.DOTALL)
         self.tree = discord.app_commands.CommandTree(self, fallback_to_global=False)
-        super().__init__(intents=discord.Intents(1))
 
     async def setup_hook(self) -> None:
         """
@@ -420,11 +422,7 @@ class RoleBot(discord.AutoShardedClient):
                 content="You are ineligible to use this button", ephemeral=True
             )
 
-        new_role_ids = starting_role_ids
-
-        new_role_ids ^= rules.toggle
-        new_role_ids |= rules.add
-        new_role_ids -= rules.remove
+        new_role_ids = ((starting_role_ids ^ rules.toggle) | rules.add) - rules.remove
 
         # not using symetric difference here because we need these seperately later anyhow
         added, removed = (
@@ -533,3 +531,13 @@ class RoleBot(discord.AutoShardedClient):
                 pass
 
         return message
+
+
+if __name__ == "__main__":
+    token = os.getenv("ROLEBOT_TOKEN", "")
+    p = Path(__file__).with_name("rolebot.secrets")
+    _generate_secret_data_file(p)
+    valid_since, aessiv = get_secret_data_from_file(p)
+
+    client = RoleBot(valid_since, aessiv)
+    client.run(token)

@@ -3,7 +3,7 @@
 
 # Stability
 
-Right now, this isn't ready for public use
+Right now, this isn't ready for public use. It works, but it isn't user friendly at all yet.
 
 # Security
 
