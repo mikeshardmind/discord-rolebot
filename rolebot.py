@@ -8,21 +8,21 @@ Copyright (C) 2022 Michael Hall <https://github.com/mikeshardmind>
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import struct
+from collections.abc import Iterator
 from itertools import chain
 from pathlib import Path
-import sys
-from typing import Iterator, NamedTuple
+from typing import NamedTuple
 
-import xxhash
 import base2048
 import discord
-import json
+import xxhash
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESSIV
+from cryptography.hazmat.primitives.ciphers.aead import AESSIV  # See security considerations below if concerned
 from typing_extensions import Self
 
 try:
@@ -32,7 +32,7 @@ except ModuleNotFoundError:
 
 log = logging.getLogger(__name__)
 
-########################################## HAZMAT: AESSIV ##########################################
+##################################### SECURITY CONSIDERATIONS  #####################################
 #
 # The key is kept secret
 # Associated data is known by both parties, [guild_id, channel_id, message_id]
@@ -119,6 +119,77 @@ class RuleError(Exception):
     """Used to indicate issues with specific rules"""
 
 
+class V1TooManyIDs(RuleError):
+    def __init__(self: Self, *args: object) -> None:
+        super().__init__("May only pack 13 discord ids into a version 1 ruleset")
+
+
+class V1ToggleWithAddRemove(RuleError):
+    def __init__(self: Self, *args: object) -> None:
+        super().__init__("Can't mix toggle with add or remove")
+
+
+class V1MultipleToggle(RuleError):
+    def __init__(self: Self, *args: object) -> None:
+        super().__init__("May only toggle 1 role at once")
+
+
+class V1NonActionableRule(RuleError):
+    def __init__(self: Self, *args: object) -> None:
+        super().__init__("Must provide at least one action from add, remove, or toggle")
+
+
+class RulesFileError(Exception):
+    """Used to indicate errors involving user-provided rules files"""
+
+
+class NoContent(RulesFileError):
+    def __init__(self: Self, *args: object) -> None:
+        super().__init__("Must provide content for the message the menu will be attached to")
+
+
+class NonStringLabel(RulesFileError):
+    def __init__(self: Self, *args: object) -> None:
+        super().__init__("Label must be a string")
+
+
+class NonStringContent(RulesFileError):
+    def __init__(self: Self, *args: object) -> None:
+        super().__init__("`Content` key must contain a string")
+
+
+class BadIDList(RulesFileError):
+    def __init__(self: Self, bad_key: str, *args: object) -> None:
+        self.bad_key = bad_key
+        super().__init__(f"Key: {bad_key} should be a list of integer role ids")
+
+
+class UserFacingError(Exception):
+    def __init__(self: Self, error_message: str, *args: object) -> None:
+        self.error_message = error_message
+        super().__init__(*args)
+
+
+class NoSuchRole(UserFacingError):
+    def __init__(self: Self, role_id: int, *args: object) -> None:
+        super().__init__(f"I can't find a role with id {role_id}")
+
+
+class UserHierarchyIssue(UserFacingError):
+    def __init__(self: Self, role: discord.Role, *args: object) -> None:
+        super().__init__(f"You can't create a rule for {role.mention} as it could violate discord role hierarchy")
+
+
+class BotHierarchyIssue(UserFacingError):
+    def __init__(self: Self, role: discord.Role, *args: object) -> None:
+        super().__init__(f"I can't assign {role.mention} as it is not below my top role.")
+
+
+class CantAssignManagedRole(UserFacingError):
+    def __init__(self: Self, role: discord.Role, *args: object) -> None:
+        super().__init__(f"{role.mention} is managed by an integration and cannot be assigned like this.")
+
+
 class DataV1(NamedTuple):
     add: frozenset[int]
     remove: frozenset[int]
@@ -127,7 +198,7 @@ class DataV1(NamedTuple):
     require_all: frozenset[int]
     require_none: frozenset[int]
 
-    def validate(self):
+    def validate(self: Self) -> None:
         """
         Checks that
         - there are 13 or fewer discord ids encoded
@@ -136,19 +207,39 @@ class DataV1(NamedTuple):
         - that at least one of toggle, add, or remove is provided
         """
         if sum(map(len, self)) > 13:
-            raise RuleError("May only pack 13 discord ids into a version 1 ruleset")
+            raise V1TooManyIDs
 
         if tog := self.toggle:
             if self.add or self.remove:
-                raise RuleError("Can't mix toggle with add or remove")
+                raise V1ToggleWithAddRemove
             if len(tog) > 1:
-                raise RuleError("May only toggle 1 role at once")
+                raise V1MultipleToggle
         else:
             if not (self.add or self.remove):
-                raise RuleError("Must provide at least one of add, remove, or toggle as an action")
+                raise V1NonActionableRule
+
+    def check_ids_meet_requirements(self: Self, ids: set[int], /) -> bool:
+        """
+        Checks if a hypothetical set of ids meet requirements
+        """
+
+        if self.require_any and not (self.require_any & ids):
+            return False
+
+        if (self.require_all & ids) - self.require_all:
+            return False
+
+        if self.require_none & ids:
+            return False
+
+        return True
+
+    def apply_to_ids(self: Self, ids: set[int], /) -> set[int]:
+        return ((ids ^ self.toggle) | self.add) - self.remove
 
 
-# can expand this to a type union if needed later on, until then it's an alias where future API should handle this.
+# can expand this to a type union if needed later on,
+# until then it's an alias where future API should handle this
 VERSIONED_DATA = DataV1
 
 
@@ -190,17 +281,22 @@ def unpack_rules(raw: bytes, /) -> VERSIONED_DATA:
     """
     try:
         version = _get_data_version(raw)
-        if version != 1:
-            raise NoUserFeedback
+    except struct.error:
+        raise NoUserFeedback from None
+
+    if version != 1:
+        raise NoUserFeedback
+
+    try:
         data = DataV1(*_v1_struct_unpacker(raw))
         data.validate()
-    except (NoUserFeedback, struct.error) as exc:
+    except (NoUserFeedback, struct.error):
         raise NoUserFeedback from None
     except Exception as exc:
-        log.exception("Unhandled exception type %s", type(exc), exc_info=False)
+        log.exception("Unhandled exception type", exc_info=exc)
         raise NoUserFeedback from None
-    else:
-        return data
+
+    return data
 
 
 def get_secret_data_from_file(path: Path) -> tuple[int, AESSIV]:
@@ -215,7 +311,7 @@ def get_secret_data_from_file(path: Path) -> tuple[int, AESSIV]:
         return ts, AESSIV(k)
 
 
-def _generate_secret_data_file(path: Path):
+def _generate_secret_data_file(path: Path) -> None:
     """
     Writes a file in the format expected by `get_secret_data`
     after generating the values and writes to a path.
@@ -226,29 +322,32 @@ def _generate_secret_data_file(path: Path):
     (barring filesytem race conditions not considered in scope to account for)
     """
 
-    if path.exists():
-        return
-
     key = AESSIV.generate_key(512)
     time = discord.utils.time_snowflake(discord.utils.utcnow()) >> 22
 
-    with path.open(mode="wb") as fp:
-        fp.write(struct.pack("!Q64s", time, key))
+    try:
+        with path.open(mode="xb") as fp:
+            fp.write(struct.pack("!Q64s", time, key))
+    except FileExistsError:
+        pass
 
 
 def parse_rules_file(
-    bytes: bytes,
+    raw: bytes,
 ) -> tuple[str | None, discord.Embed | None, list[tuple[str, VERSIONED_DATA]]]:
 
     # This whole thing is completely not understood by typechecking,
     # and we're gonna validate this anyhow...
 
-    loaded = tomllib.loads(bytes.decode("utf-8"))  # type: ignore
+    loaded = tomllib.loads(raw.decode("utf-8"))  # type: ignore
     content = loaded.get("content", None)  # type: ignore
     ret_buttons: list[tuple[str, VERSIONED_DATA]] = []
 
+    if not isinstance(content, str):
+        raise NonStringContent
+
     if not content.strip():  # type: ignore
-        raise ValueError("Must provide content for the message the menu will be attached to")
+        raise NoContent
 
     for button in loaded.get("buttons", []):  # type: ignore
         label = button.get("label", None)  # type: ignore
@@ -256,15 +355,17 @@ def parse_rules_file(
         # No support for embeds yet
 
         if not isinstance(label, str):
-            raise ValueError("Label must be a string")
+            raise NonStringLabel
 
         sets: list[frozenset[int]] = []
 
         for name in ("add", "remove", "toggle", "require_any", "require_all", "require_none"):
-            l = button.get(name, ())  # type: ignore
-            if not all(isinstance(element, int) for element in l):  # type: ignore
-                raise ValueError(f"{name} must be a list of ids")
-            sets.append(frozenset(l))  # type: ignore
+            rids = button.get(name, ())  # type: ignore
+            if not isinstance(rids, (list, tuple)):
+                raise BadIDList(name)
+            if not all(isinstance(element, int) for element in rids):  # type: ignore
+                raise BadIDList(name)
+            sets.append(frozenset(rids))  # type: ignore
 
         rules = DataV1(*sets)
         rules.validate()
@@ -274,66 +375,78 @@ def parse_rules_file(
     return content, None, ret_buttons  # type: ignore # validated above
 
 
+def parse_and_check_rules(
+    guild: discord.Guild,
+    user: discord.Member,
+    raw: bytes,
+) -> tuple[str | None, discord.Embed | None, list[tuple[str, VERSIONED_DATA]]]:
+    generic_msg = "Something was wrong with that file (More detailed errors may be provided in the future.)"
+    try:
+        content, embed, labeled_rules = parse_rules_file(raw)
+    except (KeyError, RuleError, TypeError):
+        raise UserFacingError(generic_msg) from None
+
+    for _label, rules in labeled_rules:
+        for rid in chain(rules.add, rules.remove, rules.toggle):
+            role = guild.get_role(rid)
+            if role is None:
+                raise NoSuchRole(rid)
+            if role >= user.top_role and user.id != guild.owner_id:
+                raise UserHierarchyIssue(role)
+            if role >= guild.me.top_role and guild.me.id != guild.owner_id:
+                raise BotHierarchyIssue(role)
+
+    return content, embed, labeled_rules
+
+
 @discord.app_commands.guild_only()
 @discord.app_commands.default_permissions(manage_roles=True)
-async def role_menu_maker(itx: discord.Interaction["RoleBot"], attachment: discord.Attachment):
+async def role_menu_maker(itx: discord.Interaction[RoleBot], attachment: discord.Attachment) -> None:
     """
     This function creates a role menu from an attachment.
 
     To be better documented soon :tm:
     May also create a web interface, who knows.
     """
-    # Look, even if someone modifies the app command settings, we aren't gonna allow this. It's privesc
+    # guild only decorator, not checking for discord/discord.py failures here
     assert isinstance(itx.user, discord.Member)
     assert itx.guild
 
     if not isinstance(itx.channel, discord.TextChannel):
         # I don't think this is gonna come up??
-        return await itx.response.send_message("Use this in a text channel instead", ephemeral=True)
+        await itx.response.send_message("Use this in a text channel instead", ephemeral=True)
+        return
 
+    # Even if someone modifies the app command settings, we aren't gonna allow this. It's privesc
     if not itx.user.guild_permissions.manage_roles:
-        return await itx.response.send_message("You can't do this. (missing permissions)", ephemeral=True)
+        await itx.response.send_message("You can't do this. (missing permissions)", ephemeral=True)
+        return
 
     await itx.response.defer(ephemeral=True)
+
     try:
-        content, embed, labeled_rules = parse_rules_file(await attachment.read())
-    except Exception:
-        return await itx.followup.send(
-            "Something was wrong with that file (More detailed errors may be provided in the future.)",
-            ephemeral=True,
-        )
-
-    collected_role_ids: set[int] = set()
-
-    for _label, rules in labeled_rules:
-        collected_role_ids |= rules.add | rules.toggle | rules.remove
-
-    if not collected_role_ids:
-        return await itx.followup.send(
-            "Something was wrong with that file (no ids?.)",
-            ephemeral=True,
-        )
-
-    top_role_in_rules = max(role for rid in collected_role_ids if (role := itx.guild.get_role(rid)))
-
-    if top_role_in_rules >= itx.user.top_role:
-        return await itx.followup.send(
-            "You can't do this. (you can't create rules for roles above yours)", ephemeral=True
-        )
+        content, embed, labeled_rules = parse_and_check_rules(itx.guild, itx.user, await attachment.read())
+    except UserFacingError as exc:
+        await itx.followup.send(exc.error_message, ephemeral=True)
+        return
 
     try:
         await itx.client.create_role_menu(
-            itx.channel, content=content, embed=embed, label_action_pairs=labeled_rules
+            itx.channel,
+            content=content,
+            embed=embed,
+            label_action_pairs=labeled_rules,
         )
-    except Exception:
-        return await itx.followup.send("Something went wrong. (more detailed error in future versions)")
+    except (RuleError, RulesFileError, discord.HTTPException):
+        await itx.followup.send("Something went wrong. (more detailed error in future versions)")
+        return
 
     # It'll get stuck thinking without this, thanks discord...
     await itx.followup.send("Menu created", ephemeral=True)
 
 
 class VersionableTree(discord.app_commands.CommandTree):
-    async def get_hash(self) -> bytes:
+    async def get_hash(self: Self) -> bytes:
         commands = sorted(self._get_all_commands(guild=None), key=lambda c: c.qualified_name)
 
         translator = self.translator
@@ -346,14 +459,14 @@ class VersionableTree(discord.app_commands.CommandTree):
 
 
 class RoleBot(discord.AutoShardedClient):
-    def __init__(self, valid_since: int, aessiv: AESSIV) -> None:
+    def __init__(self: Self, valid_since: int, aessiv: AESSIV) -> None:
         super().__init__(intents=discord.Intents(1))
         self.aessiv = aessiv
         self.valid_since = valid_since
         self.interaction_regex = re.compile(r"^rr\d{2}:(.*)$", flags=re.DOTALL)
         self.tree = VersionableTree(self, fallback_to_global=False)
 
-    async def setup_hook(self) -> None:
+    async def setup_hook(self: Self) -> None:
         """
         Someone will come along and say not to do it this way, and I'll ask them
         to figure out a better way without wrecking type information
@@ -371,42 +484,37 @@ class RoleBot(discord.AutoShardedClient):
                 fp.seek(0)
                 fp.write(tree_hash)
 
-
-
         await self.tree.sync()
 
-    async def on_interaction(self: Self, interaction: discord.Interaction[Self]):
+    async def on_interaction(self: Self, interaction: discord.Interaction[Self]) -> None:
         if interaction.type is discord.InteractionType.component:
             # components *should* be guaranteed to have a custom_id by discord
             assert interaction.data is not None
             custom_id = interaction.data.get("custom_id", "")
             # above avoids relying on non-publicly exported types in an assertion
             if m := self.interaction_regex.match(custom_id):
+                guild = interaction.guild
+                if guild is None or not guild.me.guild_permissions.manage_roles:
+                    await interaction.response.defer()
+                    return
                 await self.handle_rules_for_interaction(interaction, m.group(1))
 
-    async def handle_rules_for_interaction(
-        self: Self, interaction: discord.Interaction[Self], encoded_rules: str
-    ):
-        await interaction.response.defer(ephemeral=True)
-
-        # calling contract here ensures:
-        # 1. That the message exists
-        # 2. That the guild exists
-        # 3. that the user is a member
-
-        assert interaction.message is not None
-        assert isinstance(interaction.user, discord.Member)
-        assert interaction.guild is not None
-
-        message = interaction.message
-        user = interaction.user
-        guild = interaction.guild
-
-        if (message.id >> 22) < self.valid_since:
+    def _decrypt_and_parse_rules(
+        self: Self,
+        msg_id: int,
+        user_id: int,
+        encoded_rules: str,
+    ) -> VERSIONED_DATA:
+        """
+        Handles decryption and parsing of rules, logging / raising if needed.
+        """
+        if (msg_id >> 22) < self.valid_since:
             log.info(
-                "Not processing button that predates key on message_id: %d from user: %d", message.id, user.id
+                "Not processing button that predates key on message_id: %d from user: %d",
+                msg_id,
+                user_id,
             )
-            return
+            raise NoUserFeedback
 
         try:
             by = base2048.decode(encoded_rules)
@@ -414,86 +522,116 @@ class RoleBot(discord.AutoShardedClient):
             log.exception(
                 "SEC: Could not decode expected valid custom id using base2048: %s from user %d",
                 encoded_rules,
-                user.id,
+                user_id,
             )
-            return
+            raise NoUserFeedback from None
 
         try:
-            packed_rules = self.aessiv.decrypt(by, [message.id.to_bytes(8, byteorder="big")])
+            packed_rules = self.aessiv.decrypt(by, [msg_id.to_bytes(8, byteorder="big")])
         except InvalidTag:
             log.exception(
                 "SEC: Got a custom id %s that couldn't decrypt with aessiv key from user %d",
                 encoded_rules,
-                user.id,
+                user_id,
             )
-            return
+            raise NoUserFeedback from None
 
         try:
             rules = unpack_rules(packed_rules)
-        except NoUserFeedback as exc:
+        except NoUserFeedback:
             log.exception(
                 "SEC: Could not unpack custom_id %s after decryption passed from user %d",
                 encoded_rules,
-                user.id,
+                user_id,
             )
-            return
+            raise
 
-        starting_role_ids = {r.id for r in user.roles}
+        return rules
 
-        if any(
-            (
-                (rules.require_any and not (rules.require_any & starting_role_ids)),
-                ((rules.require_all & starting_role_ids) - rules.require_all),
-                (rules.require_none & starting_role_ids),
-            )
-        ):
-            return await interaction.followup.send(
-                content="You are ineligible to use this button", ephemeral=True
-            )
+    @staticmethod
+    def _preempt_role_violations(
+        interaction: discord.Interaction,
+        rules_pack: str,
+        added: set[int],
+        removed: set[int],
+    ) -> None:
+        guild = interaction.guild
+        message = interaction.message
 
-        new_role_ids = ((starting_role_ids ^ rules.toggle) | rules.add) - rules.remove
-
-        # not using symetric difference here because we need these seperately later anyhow
-        added, removed = (
-            new_role_ids - starting_role_ids,
-            starting_role_ids - new_role_ids,
-        )
-
-        if not (added or removed):
-            return  # nothing to change
-
-        if not guild.me.guild_permissions.manage_roles:
-            return await interaction.followup.send(
-                content="I no longer have permission to do that", ephemeral=True
-            )
+        assert guild
+        assert message
 
         for rid in chain(added, removed):
             if role := guild.get_role(rid):
+                if role.managed:
+                    # this should only happen if a role can *become* managed. not putting it past discord to change this
+                    CantAssignManagedRole(role)
                 if role >= guild.me.top_role:
-                    return await interaction.followup.send(
-                        content=f"I can't assign a role this button references: {role.mention}",
-                        ephemeral=True,
-                    )
+                    raise BotHierarchyIssue(role)
             else:
                 # SEC: There's a balance between security and usability to consider below
                 # The ideal for security is to silently fail here too.
                 # The reality is that successfully attacking to this point
                 # and not tripping prior alarms for an extended period measuring years...
-                if (rid.bit_length() < 43) or not (
-                    (guild.id >> 22) < (rid >> 22) < (interaction.message.id >> 22)
-                ):
+                # If the id is impossible, it must be part of an attempt at attacking this or a major flaw
+                # in the way something is handled to get to this state.
+                # Otherwise, given the various factors at play, we'll assume the benign case of a role being deleted
+                # after a menu was created referencing it.
+
+                if (rid.bit_length() < 43) or (  # impossible snowflake
+                    (guild.id >> 22) < (rid >> 22) < (message.id >> 22)
+                ):  # temporally anomalous
                     log.critical(
                         "SEC: passed decryption, passed unpack, impossible ID %d from packed rules %s from user %d",
                         rid,
-                        packed_rules,
-                        user.id,
+                        rules_pack,
+                        interaction.user.id,
                     )
-                    return
-                else:
-                    return await interaction.followup.send(
-                        content="This button references a role that no longer exists.",
-                        ephemeral=True,
-                    )
+                    raise NoUserFeedback
+                raise NoSuchRole(rid)
+
+    async def handle_rules_for_interaction(
+        self: Self,
+        interaction: discord.Interaction[Self],
+        encoded_rules: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        # calling contract here ensures:
+        # 1. That the message exists
+        # 2. That the guild exists
+        # 3. that the user is a member
+        assert interaction.message is not None
+        assert isinstance(interaction.user, discord.Member)
+        message = interaction.message
+        user = interaction.user
+
+        rules = self._decrypt_and_parse_rules(message.id, user.id, encoded_rules)
+
+        starting_role_ids = {r.id for r in user.roles}
+
+        if not rules.check_ids_meet_requirements(starting_role_ids):
+            await interaction.followup.send(
+                content="You are ineligible to use this button",
+                ephemeral=True,
+            )
+            return
+
+        new_role_ids = rules.apply_to_ids(starting_role_ids)
+        # not using symetric difference here because we need these seperately later anyhow
+        added = new_role_ids - starting_role_ids
+        removed = starting_role_ids - new_role_ids
+
+        if not (added or removed):
+            return
+
+        try:
+            self._preempt_role_violations(interaction, encoded_rules, added, removed)
+        except UserFacingError as exc:
+            await interaction.followup.send(content=exc.error_message, ephemeral=True)
+            return
+        except NoUserFeedback:
+            return
 
         try:
             await user.edit(
@@ -525,8 +663,10 @@ class RoleBot(discord.AutoShardedClient):
         label_action_pairs: list[tuple[str, VERSIONED_DATA]],
     ) -> discord.Message:
 
+        # We shouldn't be able to hit this with this being checked in file parsing
         if len(label_action_pairs) > 25:
-            raise ValueError("Cannot provide that many buttons in a view")
+            msg = "Cannot provide that many buttons in a view"
+            raise ValueError(msg)
 
         view = discord.ui.View(timeout=None)
         view.stop()
@@ -540,7 +680,9 @@ class RoleBot(discord.AutoShardedClient):
         elif content:
             message = await channel.send(content=content)
         else:
-            raise ValueError("Must provide an embed or content")
+            msg = "Must provide an embed or content"
+            # We shouldn't be able to hit this with this being checked in file parsing
+            raise ValueError(msg)
 
         for idx, (label, data) in enumerate(label_action_pairs):
             packed = pack_rules(data)
@@ -556,24 +698,28 @@ class RoleBot(discord.AutoShardedClient):
             log.exception("edit fail", exc_info=exc)
             try:
                 await message.delete()
-            except Exception:
+            except discord.HTTPException:
                 pass
 
         return message
 
 
-def main():
-    token = os.getenv("ROLEBOT_TOKEN", "")
+def _get_token() -> str:
+    # TODO: keyrings, systemdcreds, etc
+    token = os.getenv("ROLEBOT_TOKEN")
     if not token:
+        tp = Path(__file__).with_name("rolebot.token")
         try:
-            with Path(__file__).with_name("rolebot.token").open(mode="r") as f:
-                token = f.read().strip()
-        except Exception:
-            print(
-                "Must provide a token either as an environment variable named "
-                "'ROLEBOT_TOKEN' or in a file named 'rolebot.token' next to this file."
-            )
-            sys.exit(1)
+            with tp.open(mode="r") as fp:
+                token = fp.read().strip()
+        except OSError:
+            msg = "NO TOKEN? (Use Environment `ROLEBOT_TOKEN` or file `rolebot.token`)"
+            raise RuntimeError(msg) from None
+    return token
+
+
+def main() -> None:
+    token = _get_token()
     p = Path(__file__).with_name("rolebot.secrets")
     _generate_secret_data_file(p)
     valid_since, aessiv = get_secret_data_from_file(p)
