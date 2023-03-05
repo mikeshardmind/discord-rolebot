@@ -254,11 +254,11 @@ def _v1_struct_unpacker(raw: bytes, /) -> Iterator[frozenset[int]]:
     """
     Calling contract is that you have checked the version in advance
     """
-    offset = 1
+    offset: int = 1
     for _ in range(6):
-        (q,) = struct.unpack_from("!b", raw, offset)
-        yield frozenset(struct.unpack_from(f"!{q}Q", raw, offset + 1))
-        offset += 8 * q + 1
+        (_len,) = struct.unpack_from("!b", raw, offset)
+        yield frozenset(struct.unpack_from("!%dQ" % _len, raw, offset + 1))
+        offset += 8 * _len + 1
 
 
 def _get_data_version(b: bytes, /) -> int:
