@@ -143,6 +143,11 @@ class V1ToggleWithAddRemove(RuleError):
         super().__init__("Can't mix toggle with add or remove")
 
 
+class V1AddRemoveOverlap(RuleError):
+    def __init__(self: Self, *args: object) -> None:
+        super().__init__("Can't have a role be both added and removed")
+
+
 class V1MultipleToggle(RuleError):
     def __init__(self: Self, *args: object) -> None:
         super().__init__("May only toggle 1 role at once")
@@ -219,6 +224,7 @@ class DataV1(NamedTuple):
         - that toggle is not provided with either add or remove
         - that toggle contains no more than 1 role
         - that at least one of toggle, add, or remove is provided
+        - that roles provided in add are not also provided in removed.
         """
         if sum(map(len, self)) > 13:
             raise V1TooManyIDs
@@ -231,6 +237,8 @@ class DataV1(NamedTuple):
         else:
             if not (self.add or self.remove):
                 raise V1NonActionableRule
+            if (self.add & self.remove):
+                raise V1AddRemoveOverlap
 
     def check_ids_meet_requirements(self: Self, ids: set[int], /) -> bool:
         """
