@@ -421,8 +421,14 @@ def parse_and_check_rules(
     return content, labeled_rules
 
 
-@discord.app_commands.guild_only()
-@discord.app_commands.default_permissions(manage_roles=True)
+role_menu_group = discord.app_commands.Group(
+    name="createrolemenu",
+    guild_only=True,
+    default_permissions=discord.Permissions(268435456),
+)
+
+
+@role_menu_group.command(name="fromfile")
 async def role_menu_maker(itx: discord.Interaction[RoleBot], attachment: discord.Attachment) -> None:
     """
     This function creates a role menu from an attachment.
@@ -493,7 +499,7 @@ class RoleBot(discord.AutoShardedClient):
         to figure out a better way without wrecking type information
         or having a command tied to an instance of a bot as module state.
         """
-        self.tree.command(name="createrolemenu")(role_menu_maker)
+        self.tree.add_command(role_menu_group)
 
         tree_hash = await self.tree.get_hash()
         cache_dir = platformdir_stuff.user_cache_path
