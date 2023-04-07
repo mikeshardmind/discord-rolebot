@@ -356,7 +356,7 @@ def _generate_secret_data_file(path: Path) -> None:
 
 def parse_rules_file(
     raw: bytes,
-) -> tuple[str | None, discord.Embed | None, list[tuple[str, VERSIONED_DATA]]]:
+) -> tuple[str, list[tuple[str, VERSIONED_DATA]]]:
 
     # This whole thing is completely not understood by typechecking,
     # and we're gonna validate this anyhow...
@@ -383,7 +383,7 @@ def parse_rules_file(
 
         for name in ("add", "remove", "toggle", "require_any", "require_all", "require_none"):
             rids = button.get(name, ())  # type: ignore
-            if not isinstance(rids, (list, tuple)):
+            if not isinstance(rids, list | tuple):
                 raise BadIDList(name)
             if not all(isinstance(element, int) for element in rids):  # type: ignore
                 raise BadIDList(name)
@@ -394,17 +394,17 @@ def parse_rules_file(
 
         ret_buttons.append((label, rules))
 
-    return content, None, ret_buttons  # type: ignore # validated above
+    return content, ret_buttons  # type: ignore # validated above
 
 
 def parse_and_check_rules(
     guild: discord.Guild,
     user: discord.Member,
     raw: bytes,
-) -> tuple[str | None, discord.Embed | None, list[tuple[str, VERSIONED_DATA]]]:
+) -> tuple[str, list[tuple[str, VERSIONED_DATA]]]:
     generic_msg = "Something was wrong with that file (More detailed errors may be provided in the future.)"
     try:
-        content, embed, labeled_rules = parse_rules_file(raw)
+        content, labeled_rules = parse_rules_file(raw)
     except (KeyError, RuleError, TypeError):
         raise UserFacingError(generic_msg) from None
 
@@ -418,7 +418,7 @@ def parse_and_check_rules(
             if role >= guild.me.top_role and guild.me.id != guild.owner_id:
                 raise BotHierarchyIssue(role)
 
-    return content, embed, labeled_rules
+    return content, labeled_rules
 
 
 @discord.app_commands.guild_only()
@@ -447,7 +447,7 @@ async def role_menu_maker(itx: discord.Interaction[RoleBot], attachment: discord
     await itx.response.defer(ephemeral=True)
 
     try:
-        content, embed, labeled_rules = parse_and_check_rules(itx.guild, itx.user, await attachment.read())
+        content, labeled_rules = parse_and_check_rules(itx.guild, itx.user, await attachment.read())
     except UserFacingError as exc:
         await itx.followup.send(exc.error_message, ephemeral=True)
         return
@@ -456,7 +456,6 @@ async def role_menu_maker(itx: discord.Interaction[RoleBot], attachment: discord
         await itx.client.create_role_menu(
             itx.channel,
             content=content,
-            embed=embed,
             label_action_pairs=labeled_rules,
         )
     except (RuleError, RulesFileError, discord.HTTPException):
@@ -686,31 +685,14 @@ class RoleBot(discord.AutoShardedClient):
     async def create_role_menu(
         self: Self,
         channel: discord.TextChannel,
-        content: str | None,
-        embed: discord.Embed | None,
+        content: str,
         label_action_pairs: list[tuple[str, VERSIONED_DATA]],
     ) -> discord.Message:
-
-        # We shouldn't be able to hit this with this being checked in file parsing
-        if len(label_action_pairs) > 25:
-            msg = "Cannot provide that many buttons in a view"
-            raise ValueError(msg)
 
         view = discord.ui.View(timeout=None)
         view.stop()
 
-        message: discord.Message
-
-        if embed and content:
-            message = await channel.send(content=content, embed=embed)
-        elif embed:
-            message = await channel.send(embed=embed)
-        elif content:
-            message = await channel.send(content=content)
-        else:
-            msg = "Must provide an embed or content"
-            # We shouldn't be able to hit this with this being checked in file parsing
-            raise ValueError(msg)
+        message = await channel.send(content=content)
 
         for idx, (label, data) in enumerate(label_action_pairs):
             packed = pack_rules(data)
@@ -778,7 +760,7 @@ def run_bot() -> None:
 
     try:
         valid_since, aessiv = get_secret_data_from_file(secrets_file_path)
-    except Exception:  # NOQA
+    except Exception:  # noqa: BLE001
         msg = (
             f"Generated secrets file not found in expected path {secrets_file_path}, "
             "run with --gen-secret to generate this automatically"
@@ -808,9 +790,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if args.gen_secret:  # This is safe to run with existing secrets file.
-        run_generate_secret()
-    if args.isetup:
+    if args.gen_secret:
+        run_generate_secret()  
+    elif args.isetup:
         run_setup()
     elif args.token:
         _set_keyring_creds(args.token)
