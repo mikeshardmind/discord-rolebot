@@ -15,7 +15,7 @@ import logging
 import os
 import re
 import struct
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from itertools import chain
 from pathlib import Path
 from typing import NamedTuple
@@ -23,17 +23,12 @@ from typing import NamedTuple
 import base2048
 import discord
 import keyring
+import msgspec
 import platformdirs
 import xxhash
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV  # See security considerations below if concerned
 from typing_extensions import Self
-
-try:
-    import tomllib  # type: ignore
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore
-
 
 try:
     import uvloop  # type: ignore
@@ -167,6 +162,11 @@ class NoContent(RulesFileError):
         super().__init__("Must provide content for the message the menu will be attached to")
 
 
+class EmptyLabel(RulesFileError):
+    def __init__(self: Self, *args: object) -> None:
+        super().__init__("Label must contain some text")
+
+
 class NonStringLabel(RulesFileError):
     def __init__(self: Self, *args: object) -> None:
         super().__init__("Label must be a string")
@@ -209,6 +209,24 @@ class CantAssignManagedRole(UserFacingError):
         super().__init__(f"{role.mention} is managed by an integration and cannot be assigned like this.")
 
 
+class TomlDataV1Button(msgspec.Struct):
+    label: str
+    add: frozenset[int] = frozenset()
+    remove: frozenset[int] = frozenset()
+    toggle: frozenset[int] = frozenset()
+    require_any: frozenset[int] = frozenset()
+    require_all: frozenset[int] = frozenset()
+    require_none: frozenset[int] = frozenset()
+
+    def __iter__(self: Self) -> Generator[frozenset[int], None, None]:
+        yield from (self.add, self.remove, self.toggle, self.require_any, self.require_all, self.require_none)
+
+
+class TomlConfiguration(msgspec.Struct):
+    content: str
+    buttons: list[TomlDataV1Button]
+
+
 class DataV1(NamedTuple):
     add: frozenset[int]
     remove: frozenset[int]
@@ -217,56 +235,66 @@ class DataV1(NamedTuple):
     require_all: frozenset[int]
     require_none: frozenset[int]
 
-    def validate(self: Self) -> None:
-        """
-        Checks that
-        - there are 13 or fewer discord ids encoded
-        - that toggle is not provided with either add or remove
-        - that toggle contains no more than 1 role
-        - that at least one of toggle, add, or remove is provided
-        - that roles provided in add are not also provided in removed.
-        """
-        if sum(map(len, self)) > 13:
-            raise V1TooManyIDs
 
-        if tog := self.toggle:
-            if self.add or self.remove:
-                raise V1ToggleWithAddRemove
-            if len(tog) > 1:
-                raise V1MultipleToggle
-        else:
-            if not (self.add or self.remove):
-                raise V1NonActionableRule
-            if (self.add & self.remove):
-                raise V1AddRemoveOverlap
+def validate_datav1(data: DataV1 | TomlDataV1Button) -> None:
+    """
+    Checks that
+    - there are 13 or fewer discord ids encoded
+    - that toggle is not provided with either add or remove
+    - that toggle contains no more than 1 role
+    - that at least one of toggle, add, or remove is provided
+    - that roles provided in add are not also provided in removed.
+    """
 
-    def check_ids_meet_requirements(self: Self, ids: set[int], /) -> bool:
-        """
-        Checks if a hypothetical set of ids meet requirements
-        """
+    if (
+        sum(
+            map(len, (data.add, data.remove, data.toggle, data.require_any, data.require_all, data.require_none)),
+        )
+        > 13
+    ):
+        raise V1TooManyIDs
 
-        if self.require_any and not (self.require_any & ids):
-            return False
+    if tog := data.toggle:
+        if data.add or data.remove:
+            raise V1ToggleWithAddRemove
+        if len(tog) > 1:
+            raise V1MultipleToggle
+    else:
+        if not (data.add or data.remove):
+            raise V1NonActionableRule
+        if data.add & data.remove:
+            raise V1AddRemoveOverlap
 
-        if (self.require_all & ids) - self.require_all:
-            return False
 
-        if self.require_none & ids:
-            return False
+def apply_datav1_to_ids(data: DataV1 | TomlDataV1Button, ids: set[int], /) -> set[int]:
+    return ((ids ^ data.toggle) | data.add) - data.remove
 
-        return True
 
-    def apply_to_ids(self: Self, ids: set[int], /) -> set[int]:
-        return ((ids ^ self.toggle) | self.add) - self.remove
+def check_datav1_rules_against_ids(data: DataV1 | TomlDataV1Button, ids: set[int], /) -> bool:
+    """
+    Checks if a hypothetical set of ids meet requirements
+    """
+
+    if data.require_any and not (data.require_any & ids):
+        return False
+
+    if (data.require_all & ids) - data.require_all:
+        return False
+
+    if data.require_none & ids:
+        return False
+
+    return True
 
 
 # can expand this to a type union if needed later on,
 # until then it's an alias where future API should handle this
 VERSIONED_DATA = DataV1
+VERSIONED_DATA_TOML = TomlDataV1Button
 
 
-def pack_rules(data: VERSIONED_DATA, /) -> bytes:
-    data.validate()
+def pack_rules(data: VERSIONED_DATA | TomlDataV1Button, /) -> bytes:
+    validate_datav1(data)
     struct_fmt = "!bb%dQb%dQb%dQb%dQb%dQb%dQ" % tuple(map(len, data))
     to_pack = chain.from_iterable((len(lst), *lst) for lst in data)
     return struct.pack(struct_fmt, 1, *to_pack)  # needs changing if new version
@@ -311,7 +339,7 @@ def unpack_rules(raw: bytes, /) -> VERSIONED_DATA:
 
     try:
         data = DataV1(*_v1_struct_unpacker(raw))
-        data.validate()
+        validate_datav1(data)
     except (NoUserFeedback, struct.error):
         raise NoUserFeedback from None
     except Exception as exc:
@@ -354,62 +382,28 @@ def _generate_secret_data_file(path: Path) -> None:
         pass
 
 
-def parse_rules_file(
-    raw: bytes,
-) -> tuple[str, list[tuple[str, VERSIONED_DATA]]]:
-
-    # This whole thing is completely not understood by typechecking,
-    # and we're gonna validate this anyhow...
-
-    loaded = tomllib.loads(raw.decode("utf-8"))  # type: ignore
-    content = loaded.get("content", None)  # type: ignore
-    ret_buttons: list[tuple[str, VERSIONED_DATA]] = []
-
-    if not isinstance(content, str):
-        raise NonStringContent
-
-    if not content.strip():  # type: ignore
-        raise NoContent
-
-    for button in loaded.get("buttons", []):  # type: ignore
-        label = button.get("label", None)  # type: ignore
-
-        # No support for embeds yet
-
-        if not isinstance(label, str):
-            raise NonStringLabel
-
-        sets: list[frozenset[int]] = []
-
-        for name in ("add", "remove", "toggle", "require_any", "require_all", "require_none"):
-            rids = button.get(name, ())  # type: ignore
-            if not isinstance(rids, list | tuple):
-                raise BadIDList(name)
-            if not all(isinstance(element, int) for element in rids):  # type: ignore
-                raise BadIDList(name)
-            sets.append(frozenset(rids))  # type: ignore
-
-        rules = DataV1(*sets)
-        rules.validate()
-
-        ret_buttons.append((label, rules))
-
-    return content, ret_buttons  # type: ignore # validated above
-
-
 def parse_and_check_rules(
     guild: discord.Guild,
     user: discord.Member,
     raw: bytes,
-) -> tuple[str, list[tuple[str, VERSIONED_DATA]]]:
+) -> TomlConfiguration:
     generic_msg = "Something was wrong with that file (More detailed errors may be provided in the future.)"
     try:
-        content, labeled_rules = parse_rules_file(raw)
-    except (KeyError, RuleError, TypeError):
+        config = msgspec.toml.decode(raw, type=TomlConfiguration)
+    except msgspec.ValidationError:
         raise UserFacingError(generic_msg) from None
 
-    for _label, rules in labeled_rules:
-        for rid in chain(rules.add, rules.remove, rules.toggle):
+    if not config.buttons:
+        msg = "Must provide between 1 and 25 buttons"
+        raise UserFacingError(msg)
+
+    for button in config.buttons:
+        if not button.label:
+            raise EmptyLabel
+
+        validate_datav1(button)
+
+        for rid in chain(button.add, button.remove, button.toggle):
             role = guild.get_role(rid)
             if role is None:
                 raise NoSuchRole(rid)
@@ -418,7 +412,7 @@ def parse_and_check_rules(
             if role >= guild.me.top_role and guild.me.id != guild.owner_id:
                 raise BotHierarchyIssue(role)
 
-    return content, labeled_rules
+    return config
 
 
 role_menu_group = discord.app_commands.Group(
@@ -453,17 +447,14 @@ async def role_menu_maker(itx: discord.Interaction[RoleBot], attachment: discord
     await itx.response.defer(ephemeral=True)
 
     try:
-        content, labeled_rules = parse_and_check_rules(itx.guild, itx.user, await attachment.read())
+        config = parse_and_check_rules(itx.guild, itx.user, await attachment.read())
+
     except UserFacingError as exc:
         await itx.followup.send(exc.error_message, ephemeral=True)
         return
 
     try:
-        await itx.client.create_role_menu(
-            itx.channel,
-            content=content,
-            label_action_pairs=labeled_rules,
-        )
+        await itx.client.create_role_menu(itx.channel, config=config)
     except (RuleError, RulesFileError, discord.HTTPException):
         await itx.followup.send("Something went wrong. (more detailed error in future versions)")
         return
@@ -643,14 +634,14 @@ class RoleBot(discord.AutoShardedClient):
 
         starting_role_ids = {r.id for r in user.roles}
 
-        if not rules.check_ids_meet_requirements(starting_role_ids):
+        if not check_datav1_rules_against_ids(rules, starting_role_ids):
             await interaction.followup.send(
                 content="You are ineligible to use this button",
                 ephemeral=True,
             )
             return
 
-        new_role_ids = rules.apply_to_ids(starting_role_ids)
+        new_role_ids = apply_datav1_to_ids(rules, starting_role_ids)
         # not using symetric difference here because we need these seperately later anyhow
         added = new_role_ids - starting_role_ids
         removed = starting_role_ids - new_role_ids
@@ -691,22 +682,20 @@ class RoleBot(discord.AutoShardedClient):
     async def create_role_menu(
         self: Self,
         channel: discord.TextChannel,
-        content: str,
-        label_action_pairs: list[tuple[str, VERSIONED_DATA]],
+        config: TomlConfiguration,
     ) -> discord.Message:
-
         view = discord.ui.View(timeout=None)
         view.stop()
 
-        message = await channel.send(content=content)
+        message = await channel.send(content=config.content)
 
-        for idx, (label, data) in enumerate(label_action_pairs):
+        for idx, data in enumerate(config.buttons):
             packed = pack_rules(data)
             associated_data = [message.id.to_bytes(8, byteorder="big"), idx.to_bytes(1, byteorder="big")]
             enc = self.aessiv.encrypt(packed, associated_data)
             to_disc = base2048.encode(enc)
             custom_id = f"rr{idx:02}:{to_disc}"
-            button: discord.ui.Button[discord.ui.View] = discord.ui.Button(label=label, custom_id=custom_id)
+            button: discord.ui.Button[discord.ui.View] = discord.ui.Button(label=data.label, custom_id=custom_id)
             view.add_item(button)
 
         try:
@@ -746,7 +735,6 @@ def run_generate_secret() -> None:
 
 
 def run_setup() -> None:
-
     prompt = (
         "Paste the discord token you'd like to use for this bot here (won't be visible) then press enter. "
         "This will be stored in the system keyring for later use >"
@@ -797,7 +785,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.gen_secret:
-        run_generate_secret()  
+        run_generate_secret()
     elif args.isetup:
         run_setup()
     elif args.token:
