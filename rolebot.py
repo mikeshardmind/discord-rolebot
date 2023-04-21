@@ -18,7 +18,7 @@ import struct
 from collections.abc import Generator, Iterator
 from itertools import chain
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Self
 
 import base2048
 import discord
@@ -28,7 +28,6 @@ import platformdirs
 import xxhash
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV  # See security considerations below if concerned
-from typing_extensions import Self
 
 try:
     import uvloop  # type: ignore

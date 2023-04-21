@@ -1,7 +1,7 @@
 [tool.ruff]
 
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 select = [
     "F", "E", "I", "UP", "YTT", "ANN", "S", "BLE", "B", "A", "COM", "C4", "DTZ",
     "EM", "ISC", "G", "INP", "PIE", "T20", "Q003", "RSE", "RET", "SIM", "TID", "PTH", 
@@ -17,3 +17,9 @@ ignore = [
 unfixable = [
     "ERA"  # I don't want anything erroneously detected deleted by this.
 ]
+
+
+[tool.pyright]
+include = ["rolebot.py"]
+typeCheckingMode = "strict"
+pythonVersion = "3.11"
