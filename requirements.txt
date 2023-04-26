@@ -5,4 +5,4 @@ aiohttp>=3.8.3,<4
 xxhash==3.2.0
 keyring==23.13.1
 platformdirs==3.1.0
-msgspec >=0.14.2
+msgspec @ git+https://github.com/jcrist/msgspec.git@dc885f96b14f116c1e116932d7120d5aa1ab7d3b

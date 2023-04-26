@@ -388,7 +388,7 @@ def parse_and_check_rules(
 ) -> TomlConfiguration:
     generic_msg = "Something was wrong with that file (More detailed errors may be provided in the future.)"
     try:
-        config = msgspec.toml.decode(raw, type=TomlConfiguration)  # type: ignore  # pyright#4988
+        config = msgspec.toml.decode(raw, type=TomlConfiguration)
     except msgspec.ValidationError:
         raise UserFacingError(generic_msg) from None
 
