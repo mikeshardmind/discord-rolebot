@@ -484,13 +484,7 @@ class RoleBot(discord.AutoShardedClient):
         self.tree = VersionableTree(self, fallback_to_global=False)
 
     async def setup_hook(self: Self) -> None:
-        """
-        Someone will come along and say not to do it this way, and I'll ask them
-        to figure out a better way without wrecking type information
-        or having a command tied to an instance of a bot as module state.
-        """
         self.tree.add_command(role_menu_group)
-
         tree_hash = await self.tree.get_hash()
         cache_dir = platformdir_stuff.user_cache_path
         cache_dir.mkdir(exist_ok=True, parents=True)
