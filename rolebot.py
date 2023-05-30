@@ -22,7 +22,6 @@ from typing import NamedTuple, Self
 
 import base2048
 import discord
-import keyring
 import msgspec
 import platformdirs
 import xxhash
@@ -703,19 +702,21 @@ class RoleBot(discord.AutoShardedClient):
         return message
 
 
-def _get_keyring_creds() -> str | None:
-    user = getpass.getuser()
-    return keyring.get_password("discord-rolebot-token", user)
+def _get_stored_token() -> str | None:
+    token_file_path = platformdir_stuff.user_config_path / "rolebot.token"
+    if token_file_path.exists():
+        with token_file_path.open(mode="r") as fp:
+            return base2048.decode(fp.read()).decode("utf-8")
+    return None
 
-
-def _set_keyring_creds(token: str, /) -> None:
-    user = getpass.getuser()
-    keyring.set_password("discord-rolebot-token", user, token)
-
+def _store_token(token: str, /) -> None:
+    token_file_path = platformdir_stuff.user_config_path / "rolebot.token"
+    with token_file_path.open(mode="w") as fp:
+        fp.write(base2048.encode(token.encode()))
 
 def _get_token() -> str:
     # TODO: alternative token stores: systemdcreds, etc
-    token = os.getenv("ROLEBOT_TOKEN") or _get_keyring_creds()
+    token = os.getenv("ROLEBOT_TOKEN") or _get_stored_token()
     if not token:
         msg = "NO TOKEN? (Use Environment `ROLEBOT_TOKEN` or launch with `--setup` to go through interactive setup)"
         raise RuntimeError(msg) from None
@@ -730,13 +731,13 @@ def run_generate_secret() -> None:
 def run_setup() -> None:
     prompt = (
         "Paste the discord token you'd like to use for this bot here (won't be visible) then press enter. "
-        "This will be stored in the system keyring for later use >"
+        "This will be stored for later use >"
     )
     token = getpass.getpass(prompt)
     if not token:
         msg = "Not storing empty token"
         raise RuntimeError(msg)
-    _set_keyring_creds(token)
+    _store_token(token)
 
 
 def run_bot() -> None:
@@ -782,6 +783,6 @@ if __name__ == "__main__":
     elif args.isetup:
         run_setup()
     elif args.token:
-        _set_keyring_creds(args.token)
+        _store_token(args.token)
     else:
         run_bot()
