@@ -347,12 +347,28 @@ def unpack_rules(raw: bytes, /) -> VERSIONED_DATA:
     return data
 
 
+def resolve_path_with_links(path: Path, folder: bool=False) -> Path:
+    """
+    Python only resolves with strict=True if the path exists.
+    """
+    try:
+        return path.resolve(strict=True)
+    except FileNotFoundError:
+        path = resolve_path_with_links(path.parent, folder=True) / path.name
+        if folder:
+            path.mkdir(mode=0o700)  # python's default is world read/write/traversable... (0o777)
+        else:
+            path.touch(mode=0o600)  # python's default is world read/writable... (0o666)
+        return path.resolve(strict=True)
+
+
 def get_secret_data_from_file(path: Path) -> tuple[int, AESSIV]:
     """
     We get back a number that represents an equivalent
     time portion of a discord snowflake (snowflake >> 22)
     for when a key was generated ad well as a key
     """
+    path = resolve_path_with_links(path)
     with path.open(mode="rb") as fp:
         raw = fp.read()
         ts, k = struct.unpack("!Q64s", raw)
@@ -366,20 +382,21 @@ def _generate_secret_data_file(path: Path) -> None:
 
     assumes system clock is fine.
 
-    will not overwrite an existing path
-    (barring filesytem race conditions not considered in scope to account for)
+    will not overwrite existing data.
+    (barring race conditions not considered in scope to account for at this time)
     """
 
     key = AESSIV.generate_key(512)
     time = discord.utils.time_snowflake(discord.utils.utcnow()) >> 22
-    path.parent.mkdir(exist_ok=True, parents=True, mode=0o700)
-    if path.exists():
-        return
-    # default open while creating a file ends up world-rw
-    # This is more racy that opening with xb, but I'm fine accepting that
-    # as unlikely with correct use at this point in time.
-    path.touch(mode=0o600)
-    with path.open(mode="wb") as fp:
+    path = resolve_path_with_links(path, folder=True)
+
+    with path.open(mode="a+b") as fp:
+        # a opens seeked to end of file, we use this here
+        # to ensure we aren't overwriting. it's worse than opening with x, but opening with x
+        # prevents us from controlling the file access prior to writing anything,
+        # and python's default is world read/writable
+        if fp.tell() != 0:
+            return
         fp.write(struct.pack("!Q64s", time, key))
 
 
@@ -488,10 +505,8 @@ class RoleBot(discord.AutoShardedClient):
     async def setup_hook(self: Self) -> None:
         self.tree.add_command(role_menu_group)
         tree_hash = await self.tree.get_hash()
-        cache_dir = platformdir_stuff.user_cache_path
-        cache_dir.mkdir(exist_ok=True, parents=True, mode=0o700)
-        path = cache_dir / "tree.hash"
-        path.touch(mode=0o600)
+        path = platformdir_stuff.user_cache_path / "tree.hash"
+        path = resolve_path_with_links(path)
         with path.open(mode="r+b") as fp:
             data = fp.read()
             if data != tree_hash:
@@ -706,15 +721,14 @@ class RoleBot(discord.AutoShardedClient):
 
 def _get_stored_token() -> str | None:
     token_file_path = platformdir_stuff.user_config_path / "rolebot.token"
-    if token_file_path.exists():
-        with token_file_path.open(mode="r") as fp:
-            return base2048.decode(fp.read()).decode("utf-8")
-    return None
+    token_file_path = resolve_path_with_links(token_file_path)    
+    with token_file_path.open(mode="r") as fp:
+        data = fp.read()
+        return base2048.decode(data).decode("utf-8") if data else None
 
 def _store_token(token: str, /) -> None:
     token_file_path = platformdir_stuff.user_config_path / "rolebot.token"
-    token_file_path.parent.mkdir(exist_ok=True, parents=True, mode=0o700)
-    token_file_path.touch(mode=0o600)
+    token_file_path = resolve_path_with_links(token_file_path)
     with token_file_path.open(mode="w") as fp:
         fp.write(base2048.encode(token.encode()))
 
