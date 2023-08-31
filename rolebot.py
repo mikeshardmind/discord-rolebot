@@ -488,14 +488,12 @@ class RoleBot(discord.AutoShardedClient):
         cache_dir = platformdir_stuff.user_cache_path
         cache_dir.mkdir(exist_ok=True, parents=True)
         path = cache_dir / "tree.hash"
-        with path.open(mode="w+b") as fp:
+        with path.open(mode="r+b") as fp:
             data = fp.read()
             if data != tree_hash:
                 await self.tree.sync()
                 fp.seek(0)
                 fp.write(tree_hash)
-
-        await self.tree.sync()
 
     async def on_interaction(self: Self, interaction: discord.Interaction[Self]) -> None:
         if interaction.type is discord.InteractionType.component:
