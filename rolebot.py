@@ -372,12 +372,15 @@ def _generate_secret_data_file(path: Path) -> None:
 
     key = AESSIV.generate_key(512)
     time = discord.utils.time_snowflake(discord.utils.utcnow()) >> 22
-    path.parent.mkdir(exist_ok=True, parents=True)
-    try:
-        with path.open(mode="xb") as fp:
-            fp.write(struct.pack("!Q64s", time, key))
-    except FileExistsError:
-        pass
+    path.parent.mkdir(exist_ok=True, parents=True, mode=0o700)
+    if path.exists():
+        return
+    # default open while creating a file ends up world-rw
+    # This is more racy that opening with xb, but I'm fine accepting that
+    # as unlikely with correct use at this point in time.
+    path.touch(mode=0o600)
+    with path.open(mode="wb") as fp:
+        fp.write(struct.pack("!Q64s", time, key))
 
 
 def parse_and_check_rules(
@@ -486,8 +489,9 @@ class RoleBot(discord.AutoShardedClient):
         self.tree.add_command(role_menu_group)
         tree_hash = await self.tree.get_hash()
         cache_dir = platformdir_stuff.user_cache_path
-        cache_dir.mkdir(exist_ok=True, parents=True)
+        cache_dir.mkdir(exist_ok=True, parents=True, mode=0o700)
         path = cache_dir / "tree.hash"
+        path.touch(mode=0o600)
         with path.open(mode="r+b") as fp:
             data = fp.read()
             if data != tree_hash:
@@ -709,6 +713,8 @@ def _get_stored_token() -> str | None:
 
 def _store_token(token: str, /) -> None:
     token_file_path = platformdir_stuff.user_config_path / "rolebot.token"
+    token_file_path.parent.mkdir(exist_ok=True, parents=True, mode=0o700)
+    token_file_path.touch(mode=0o600)
     with token_file_path.open(mode="w") as fp:
         fp.write(base2048.encode(token.encode()))
 
