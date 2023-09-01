@@ -778,6 +778,7 @@ def run_bot() -> None:
 
 
 if __name__ == "__main__":
+    os.umask(0o077)
     parser = argparse.ArgumentParser(description="A minimal configuration discord bot for role menus")
     excl_setup = parser.add_mutually_exclusive_group()
     excl_setup.add_argument("--setup", action="store_true", default=False, help="Run interactive setup.", dest="isetup")
