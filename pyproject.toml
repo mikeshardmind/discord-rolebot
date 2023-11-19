@@ -19,7 +19,7 @@ ignore = [
     "C90",  # mccabe complexity memes
     'COM812', 'COM819', 'E501', 'ISC001', 'Q003',  # ruff format
     "ANN101", "ANN204",  # pyright will tell me if this is needed, thanks
-    "RUF101",
+    "RUF001",
 ]
 unfixable = [
     "ERA"  # I don't want anything erroneously detected deleted by this.
