@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import json
 import logging
 import os
 import re
@@ -491,7 +490,7 @@ class VersionableTree(discord.app_commands.CommandTree):
         else:
             payload = [command.to_dict() for command in commands]
 
-        return xxhash.xxh64_digest(json.dumps(payload).encode("utf-8"), seed=0)
+        return xxhash.xxh64_digest(msgspec.msgpack.encode(payload), seed=0)
 
 
 class RoleBot(discord.AutoShardedClient):
@@ -721,7 +720,7 @@ class RoleBot(discord.AutoShardedClient):
 
 def _get_stored_token() -> str | None:
     token_file_path = platformdir_stuff.user_config_path / "rolebot.token"
-    token_file_path = resolve_path_with_links(token_file_path)    
+    token_file_path = resolve_path_with_links(token_file_path)
     with token_file_path.open(mode="r") as fp:
         data = fp.read()
         return base2048.decode(data).decode("utf-8") if data else None
