@@ -19,13 +19,14 @@ from itertools import chain
 from pathlib import Path
 from typing import NamedTuple, Self
 
-import base2048
 import discord
 import msgspec
 import platformdirs
 import xxhash
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV  # See security considerations below if concerned
+
+from . import encoder as base2048
 
 try:
     import uvloop  # type: ignore
@@ -346,7 +347,7 @@ def unpack_rules(raw: bytes, /) -> VERSIONED_DATA:
     return data
 
 
-def resolve_path_with_links(path: Path, folder: bool=False) -> Path:
+def resolve_path_with_links(path: Path, folder: bool = False) -> Path:
     """
     Python only resolves with strict=True if the path exists.
     """
@@ -436,6 +437,7 @@ role_menu_group = discord.app_commands.Group(
     name="createrolemenu",
     guild_only=True,
     default_permissions=discord.Permissions(268435456),
+    description="...",
 )
 
 
@@ -725,11 +727,13 @@ def _get_stored_token() -> str | None:
         data = fp.read()
         return base2048.decode(data).decode("utf-8") if data else None
 
+
 def _store_token(token: str, /) -> None:
     token_file_path = platformdir_stuff.user_config_path / "rolebot.token"
     token_file_path = resolve_path_with_links(token_file_path)
     with token_file_path.open(mode="w") as fp:
         fp.write(base2048.encode(token.encode()))
+
 
 def _get_token() -> str:
     # TODO: alternative token stores: systemdcreds, etc
@@ -746,10 +750,7 @@ def run_generate_secret() -> None:
 
 
 def run_setup() -> None:
-    prompt = (
-        "Paste the discord token you'd like to use for this bot here (won't be visible) then press enter. "
-        "This will be stored for later use >"
-    )
+    prompt = "Paste the discord token you'd like to use for this bot here (won't be visible) then press enter. " "This will be stored for later use >"
     token = getpass.getpass(prompt)
     if not token:
         msg = "Not storing empty token"
@@ -766,10 +767,7 @@ def run_bot() -> None:
     try:
         valid_since, aessiv = get_secret_data_from_file(secrets_file_path)
     except Exception:  # noqa: BLE001
-        msg = (
-            f"Generated secrets file not found in expected path {secrets_file_path}, "
-            "run with --gen-secret to generate this automatically"
-        )
+        msg = f"Generated secrets file not found in expected path {secrets_file_path}, " "run with --gen-secret to generate this automatically"
         raise RuntimeError(msg) from None
 
     client = RoleBot(valid_since, aessiv)

@@ -4,7 +4,7 @@ requires-python = ">=3.11"
 
 [tool.ruff]
 
-line-length = 120
+line-length = 12000
 target-version = "py311"
 select = [
     "F", "E", "I", "UP", "YTT", "ANN", "S", "BLE", "B", "A", "COM", "C4", "DTZ",
@@ -17,6 +17,9 @@ ignore = [
     "PLR2004",  # Magic value comparison, may remove later
     "SIM105",  # supressable exception, I'm not paying the overhead of contextlib.supress for stylistic choices.
     "C90",  # mccabe complexity memes
+    'COM812', 'COM819', 'E501', 'ISC001', 'Q003',  # ruff format
+    "ANN101", "ANN204",  # pyright will tell me if this is needed, thanks
+    "RUF101",
 ]
 unfixable = [
     "ERA"  # I don't want anything erroneously detected deleted by this.
@@ -24,6 +27,6 @@ unfixable = [
 
 
 [tool.pyright]
-include = ["rolebot.py"]
+include = ["rolebot"]
 typeCheckingMode = "strict"
 pythonVersion = "3.11"
