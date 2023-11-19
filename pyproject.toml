@@ -16,6 +16,7 @@ ignore = [
     "S101",  # use of assert here is a known quantity, blame typing memes
     "PLR2004",  # Magic value comparison, may remove later
     "SIM105",  # supressable exception, I'm not paying the overhead of contextlib.supress for stylistic choices.
+    "SIM108", # ternary
     "C90",  # mccabe complexity memes
     'COM812', 'COM819', 'E501', 'ISC001', 'Q003',  # ruff format
     "ANN101", "ANN204",  # pyright will tell me if this is needed, thanks
