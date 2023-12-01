@@ -1,11 +1,11 @@
 [project]
 name = "discord-rolebot"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
 [tool.ruff]
 
 line-length = 12000
-target-version = "py311"
+target-version = "py312"
 select = [
     "F", "E", "I", "UP", "YTT", "ANN", "S", "BLE", "B", "A", "COM", "C4", "DTZ",
     "EM", "ISC", "G", "INP", "PIE", "T20", "Q003", "RSE", "RET", "SIM", "TID", "PTH",
@@ -30,4 +30,4 @@ unfixable = [
 [tool.pyright]
 include = ["rolebot"]
 typeCheckingMode = "strict"
-pythonVersion = "3.11"
+pythonVersion = "3.12"

@@ -15,15 +15,12 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable
 from io import StringIO
-from typing import Generic, TypeVar
 
 from .dec_table import dec as DEC_TABLE
 from .enc_table import enc as ENC_TABLE
 
-T = TypeVar("T")
 
-
-class Peekable(Generic[T]):
+class Peekable[T]:
     def __init__(self, iterable: Iterable[T]):
         self._it = iter(iterable)
         self._cache: deque[T] = deque()

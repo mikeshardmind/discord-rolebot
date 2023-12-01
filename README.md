@@ -3,7 +3,7 @@
 
 # Stability
 
-Right now, this isn't ready for public use. It works, but it isn't user friendly at all yet.
+Stable, but may require updates when discord changes things. Not user friendly for discord configuration.
 
 # Security
 

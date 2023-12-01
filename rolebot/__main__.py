@@ -244,12 +244,7 @@ def validate_datav1(data: DataV1 | TomlDataV1Button) -> None:
     - that roles provided in add are not also provided in removed.
     """
 
-    if (
-        sum(
-            map(len, (data.add, data.remove, data.toggle, data.require_any, data.require_all, data.require_none)),
-        )
-        > 13
-    ):
+    if sum(map(len, data)) > 13:
         raise V1TooManyIDs
 
     if tog := data.toggle:
