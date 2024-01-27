@@ -1,6 +1,6 @@
-cryptography>=41.0.6
+cryptography>=42.0.1
 discord.py>=2.3.2,<3
 aiohttp>=3.9.1,<4
 xxhash==3.4.1
 platformdirs==4.0.0
-msgspec==0.18.4
+msgspec==0.18.6
