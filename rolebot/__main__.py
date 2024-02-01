@@ -745,7 +745,10 @@ def run_generate_secret() -> None:
 
 
 def run_setup() -> None:
-    prompt = "Paste the discord token you'd like to use for this bot here (won't be visible) then press enter. " "This will be stored for later use >"
+    prompt = (
+        "Paste the discord token you'd like to use for this bot here (won't be visible) then press enter. "
+        "This will be stored for later use >"
+    )
     token = getpass.getpass(prompt)
     if not token:
         msg = "Not storing empty token"
@@ -762,7 +765,10 @@ def run_bot() -> None:
     try:
         valid_since, aessiv = get_secret_data_from_file(secrets_file_path)
     except Exception:  # noqa: BLE001
-        msg = f"Generated secrets file not found in expected path {secrets_file_path}, " "run with --gen-secret to generate this automatically"
+        msg = (
+            f"Generated secrets file not found in expected path {secrets_file_path}, "
+            "run with --gen-secret to generate this automatically"
+        )
         raise RuntimeError(msg) from None
 
     client = RoleBot(valid_since, aessiv)
