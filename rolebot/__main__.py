@@ -127,27 +127,27 @@ class RuleError(Exception):
 
 
 class V1TooManyIDs(RuleError):
-    def __init__(self: Self, *args: object) -> None:
+    def __init__(self, *args: object) -> None:
         super().__init__("May only pack 13 discord ids into a version 1 ruleset")
 
 
 class V1ToggleWithAddRemove(RuleError):
-    def __init__(self: Self, *args: object) -> None:
+    def __init__(self, *args: object) -> None:
         super().__init__("Can't mix toggle with add or remove")
 
 
 class V1AddRemoveOverlap(RuleError):
-    def __init__(self: Self, *args: object) -> None:
+    def __init__(self, *args: object) -> None:
         super().__init__("Can't have a role be both added and removed")
 
 
 class V1MultipleToggle(RuleError):
-    def __init__(self: Self, *args: object) -> None:
+    def __init__(self, *args: object) -> None:
         super().__init__("May only toggle 1 role at once")
 
 
 class V1NonActionableRule(RuleError):
-    def __init__(self: Self, *args: object) -> None:
+    def __init__(self, *args: object) -> None:
         super().__init__("Must provide at least one action from add, remove, or toggle")
 
 
@@ -156,54 +156,54 @@ class RulesFileError(Exception):
 
 
 class NoContent(RulesFileError):
-    def __init__(self: Self, *args: object) -> None:
+    def __init__(self, *args: object) -> None:
         super().__init__("Must provide content for the message the menu will be attached to")
 
 
 class EmptyLabel(RulesFileError):
-    def __init__(self: Self, *args: object) -> None:
+    def __init__(self, *args: object) -> None:
         super().__init__("Label must contain some text")
 
 
 class NonStringLabel(RulesFileError):
-    def __init__(self: Self, *args: object) -> None:
+    def __init__(self, *args: object) -> None:
         super().__init__("Label must be a string")
 
 
 class NonStringContent(RulesFileError):
-    def __init__(self: Self, *args: object) -> None:
+    def __init__(self, *args: object) -> None:
         super().__init__("`Content` key must contain a string")
 
 
 class BadIDList(RulesFileError):
-    def __init__(self: Self, bad_key: str, *args: object) -> None:
+    def __init__(self, bad_key: str, *args: object) -> None:
         self.bad_key = bad_key
         super().__init__(f"Key: {bad_key} should be a list of integer role ids")
 
 
 class UserFacingError(Exception):
-    def __init__(self: Self, error_message: str, *args: object) -> None:
+    def __init__(self, error_message: str, *args: object) -> None:
         self.error_message = error_message
         super().__init__(*args)
 
 
 class NoSuchRole(UserFacingError):
-    def __init__(self: Self, role_id: int, *args: object) -> None:
+    def __init__(self, role_id: int, *args: object) -> None:
         super().__init__(f"I can't find a role with id {role_id}")
 
 
 class UserHierarchyIssue(UserFacingError):
-    def __init__(self: Self, role: discord.Role, *args: object) -> None:
+    def __init__(self, role: discord.Role, *args: object) -> None:
         super().__init__(f"You can't create a rule for {role.mention} as it could violate discord role hierarchy")
 
 
 class BotHierarchyIssue(UserFacingError):
-    def __init__(self: Self, role: discord.Role, *args: object) -> None:
+    def __init__(self, role: discord.Role, *args: object) -> None:
         super().__init__(f"I can't assign {role.mention} as it is not below my top role.")
 
 
 class CantAssignManagedRole(UserFacingError):
-    def __init__(self: Self, role: discord.Role, *args: object) -> None:
+    def __init__(self, role: discord.Role, *args: object) -> None:
         super().__init__(f"{role.mention} is managed by an integration and cannot be assigned like this.")
 
 
@@ -216,7 +216,7 @@ class TomlDataV1Button(msgspec.Struct):
     require_all: frozenset[int] = frozenset()
     require_none: frozenset[int] = frozenset()
 
-    def __iter__(self: Self) -> Generator[frozenset[int], None, None]:
+    def __iter__(self) -> Generator[frozenset[int], None, None]:
         yield from (self.add, self.remove, self.toggle, self.require_any, self.require_all, self.require_none)
 
 
@@ -478,7 +478,7 @@ async def role_menu_maker(itx: discord.Interaction[RoleBot], attachment: discord
 
 
 class VersionableTree(discord.app_commands.CommandTree):
-    async def get_hash(self: Self) -> bytes:
+    async def get_hash(self) -> bytes:
         commands = sorted(self._get_all_commands(guild=None), key=lambda c: c.qualified_name)
 
         translator = self.translator
@@ -491,14 +491,14 @@ class VersionableTree(discord.app_commands.CommandTree):
 
 
 class RoleBot(discord.AutoShardedClient):
-    def __init__(self: Self, valid_since: int, aessiv: AESSIV) -> None:
+    def __init__(self, valid_since: int, aessiv: AESSIV) -> None:
         super().__init__(intents=discord.Intents(1))
         self.aessiv = aessiv
         self.valid_since = valid_since
         self.interaction_regex = re.compile(r"^rr(\d{2}):(.*)$", flags=re.DOTALL)
         self.tree = VersionableTree(self, fallback_to_global=False)
 
-    async def setup_hook(self: Self) -> None:
+    async def setup_hook(self) -> None:
         self.tree.add_command(role_menu_group)
         tree_hash = await self.tree.get_hash()
         path = platformdir_stuff.user_cache_path / "tree.hash"
@@ -510,7 +510,7 @@ class RoleBot(discord.AutoShardedClient):
                 fp.seek(0)
                 fp.write(tree_hash)
 
-    async def on_interaction(self: Self, interaction: discord.Interaction[Self]) -> None:
+    async def on_interaction(self, interaction: discord.Interaction[Self]) -> None:
         if interaction.type is discord.InteractionType.component:
             # components *should* be guaranteed to have a custom_id by discord
             assert interaction.data is not None
@@ -525,7 +525,7 @@ class RoleBot(discord.AutoShardedClient):
                 await self.handle_rules_for_interaction(interaction, int(index), rules)
 
     def _decrypt_and_parse_rules(
-        self: Self,
+        self,
         msg_id: int,
         user_id: int,
         index: int,
@@ -619,7 +619,7 @@ class RoleBot(discord.AutoShardedClient):
                 raise NoSuchRole(rid)
 
     async def handle_rules_for_interaction(
-        self: Self,
+        self,
         interaction: discord.Interaction[Self],
         index: int,
         encoded_rules: str,
@@ -685,7 +685,7 @@ class RoleBot(discord.AutoShardedClient):
             await interaction.followup.send(content=content, ephemeral=True)
 
     async def create_role_menu(
-        self: Self,
+        self,
         channel: discord.TextChannel,
         config: TomlConfiguration,
     ) -> discord.Message:
