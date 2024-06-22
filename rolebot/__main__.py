@@ -478,14 +478,14 @@ async def role_menu_maker(itx: discord.Interaction[RoleBot], attachment: discord
 
 
 class VersionableTree(discord.app_commands.CommandTree):
-    async def get_hash(self) -> bytes:
+    async def get_hash(self, tree: discord.app_commands.CommandTree) -> bytes:
         commands = sorted(self._get_all_commands(guild=None), key=lambda c: c.qualified_name)
 
         translator = self.translator
         if translator:
-            payload = [await command.get_translated_payload(translator) for command in commands]
+            payload = [await command.get_translated_payload(tree, translator) for command in commands]
         else:
-            payload = [command.to_dict() for command in commands]
+            payload = [command.to_dict(tree) for command in commands]
 
         return xxhash.xxh64_digest(msgspec.msgpack.encode(payload), seed=0)
 
@@ -500,7 +500,7 @@ class RoleBot(discord.AutoShardedClient):
 
     async def setup_hook(self) -> None:
         self.tree.add_command(role_menu_group)
-        tree_hash = await self.tree.get_hash()
+        tree_hash = await self.tree.get_hash(self.tree)
         path = platformdir_stuff.user_cache_path / "tree.hash"
         path = resolve_path_with_links(path)
         with path.open(mode="r+b") as fp:

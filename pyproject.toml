@@ -33,6 +33,7 @@ unfixable = [
 "typing.TypeGuard".msg = "TypeGuard is fundamentally unsafe"
 "typing_extensions.TypeIs".msg = "TypeIs is fundamentally unsafe, even when using it as described to be safe"
 "typing_extensions.TypeGuard".msg = "TypeGuard is fundamentally unsafe"
+# TODO: non-compliant type checker valuing soundness.
 
 
 [tool.pyright]
