@@ -274,10 +274,7 @@ def check_datav1_rules_against_ids(data: DataV1 | TomlDataV1Button, ids: set[int
     if (data.require_all & ids) - data.require_all:
         return False
 
-    if data.require_none & ids:
-        return False
-
-    return True
+    return not data.require_none & ids
 
 
 # can expand this to a type union if needed later on,
