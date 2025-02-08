@@ -20,11 +20,11 @@ from .enc_table import enc as ENC_TABLE
 
 
 class Peekable[T]:
-    def __init__(self, iterable: Iterable[T]):
+    def __init__(self, iterable: Iterable[T]) -> None:
         self._it = iter(iterable)
         self._cache: deque[T] = deque()
 
-    def __iter__(self):
+    def __iter__(self) -> Peekable[T]:
         return self
 
     def has_more(self) -> bool:
@@ -39,7 +39,7 @@ class Peekable[T]:
             self._cache.append(next(self._it))
         return self._cache[0]
 
-    def __next__(self):
+    def __next__(self) -> T:
         if self._cache:
             return self._cache.popleft()
         return next(self._it)

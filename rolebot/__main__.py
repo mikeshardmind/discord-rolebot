@@ -24,12 +24,14 @@ import msgspec
 import platformdirs
 import xxhash
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESSIV  # See security considerations below if concerned
+
+# See security considerations below if concerned
+from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 
 from . import encoder as base2048
 
 try:
-    import uvloop  # type: ignore
+    import uvloop  # pyright: ignore[reportMissingImports]
 except ModuleNotFoundError:
     uvloop = None
 
@@ -296,9 +298,9 @@ def _v1_struct_unpacker(raw: bytes, /) -> Iterator[frozenset[int]]:
     """
     offset: int = 1
     for _ in range(6):
-        (_len,) = struct.unpack_from("!b", raw, offset)
-        yield frozenset(struct.unpack_from("!%dQ" % _len, raw, offset + 1))
-        offset += 8 * _len + 1
+        (len_,) = struct.unpack_from("!b", raw, offset)
+        yield frozenset(struct.unpack_from("!%dQ" % len_, raw, offset + 1))
+        offset += 8 * len_ + 1
 
 
 def _get_data_version(b: bytes, /) -> int:
@@ -339,7 +341,7 @@ def unpack_rules(raw: bytes, /) -> VERSIONED_DATA:
     return data
 
 
-def resolve_path_with_links(path: Path, folder: bool = False) -> Path:
+def resolve_path_with_links(path: Path, *, folder: bool = False) -> Path:
     """
     Python only resolves with strict=True if the path exists.
     """
@@ -755,7 +757,7 @@ def run_setup() -> None:
 
 def run_bot() -> None:
     if uvloop is not None:
-        uvloop.install()  # type: ignore
+        uvloop.install()  # pyright: ignore[reportUnknownMemberType]
     token = _get_token()
     secrets_file_path = platformdir_stuff.user_config_path / "rolebot.secrets"
 
