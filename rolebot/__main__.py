@@ -89,7 +89,7 @@ platformdir_stuff = platformdirs.PlatformDirs("discord-rolebot", "mikeshardmind"
 # POTENTIAL IMPACT:
 # Successful spoofing of this data could lead to a malicious user granting
 # themselves more permissions and roles in discord. Such escalation can
-# Can indirectly lead to more than the permissions the roles themselves have
+# indirectly lead to more than the permissions the roles themselves have
 # in certain cases involving bots which use roles to indicate priveleged user groups
 # rather than use the permissions of the roles directly
 #
